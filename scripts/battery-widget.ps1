@@ -223,7 +223,7 @@ function Get-StatusColor {
                 <!-- Settings gear button (angolo sinistro) -->
                 <Button x:Name="SettingsBtn" Grid.Column="0" Content="&#x2699;" Width="28" Height="28" Background="#383838" BorderThickness="0" Foreground="#FFFFFF" Style="{StaticResource FlatButton}" FontFamily="Segoe UI Symbol" FontSize="17" Cursor="Hand" HorizontalAlignment="Left" VerticalAlignment="Top">
                     <Button.ToolTip>
-                        <ToolTip Content="Impostazioni"/>
+                        <ToolTip Content="Settings"/>
                     </Button.ToolTip>
                 </Button>
 
@@ -238,7 +238,7 @@ function Get-StatusColor {
                 <!-- Close button -->
                 <Button x:Name="CloseBtn" Grid.Column="2" Content="&#x2715;" Width="28" Height="28" Background="#E53935" BorderThickness="0" Foreground="#FFFFFF" Style="{StaticResource FlatButton}" FontFamily="Segoe UI Symbol" FontSize="14" Cursor="Hand" HorizontalAlignment="Right" VerticalAlignment="Top">
                     <Button.ToolTip>
-                        <ToolTip Content="Chiudi"/>
+                        <ToolTip Content="Close"/>
                     </Button.ToolTip>
                 </Button>
             </Grid>
@@ -408,19 +408,19 @@ function Open-SettingsWindow {
     [xml]$sxaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Impostazioni" Width="240" SizeToContent="Height"
+        Title="Settings" Width="240" SizeToContent="Height"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize" Topmost="True">
     <StackPanel Margin="14">
-        <TextBlock Text="Unita' temperatura" FontSize="12" Margin="0,0,0,2"/>
+        <TextBlock Text="Temperature unit" FontSize="12" Margin="0,0,0,2"/>
         <ComboBox x:Name="UnitBox" SelectedIndex="0">
             <ComboBoxItem Content="Celsius ($($deg)C)" Tag="C"/>
             <ComboBoxItem Content="Fahrenheit ($($deg)F)" Tag="F"/>
         </ComboBox>
-        <CheckBox x:Name="BatteryChk" Content="Mostra carica batteria" FontSize="12" Margin="0,10,0,0"/>
-        <CheckBox x:Name="TopChk" Content="Sempre in primo piano" FontSize="12" Margin="0,6,0,0"/>
+        <CheckBox x:Name="BatteryChk" Content="Show battery" FontSize="12" Margin="0,10,0,0"/>
+        <CheckBox x:Name="TopChk" Content="Always on top" FontSize="12" Margin="0,6,0,0"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-            <Button x:Name="SaveBtn" Content="Salva" Width="70" Margin="0,0,8,0"/>
-            <Button x:Name="CancelBtn" Content="Annulla" Width="70"/>
+            <Button x:Name="SaveBtn" Content="Save" Width="70" Margin="0,0,8,0"/>
+            <Button x:Name="CancelBtn" Content="Cancel" Width="70"/>
         </StackPanel>
     </StackPanel>
 </Window>

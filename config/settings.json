@@ -1,6 +1,5 @@
 ﻿{
     "TempUnit":  "C",
-    "Orientation":  "Landscape",
-    "AlwaysOnTop":  true,
-    "ShowBattery":  true
+    "ShowBattery":  true,
+    "AlwaysOnTop":  true
 }
