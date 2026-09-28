@@ -1,6 +1,6 @@
 ﻿{
     "TempUnit":  "C",
-    "Orientation":  "Portrait",
-    "AlwaysOnTop":  true,
-    "ShowBattery":  true
+    "RefreshRateSec":  1,
+    "ShowBattery":  true,
+    "AlwaysOnTop":  true
 }

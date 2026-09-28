@@ -1,5 +1,6 @@
 ﻿{
     "TempUnit":  "C",
+    "RefreshRateSec":  4,
     "ShowBattery":  true,
     "AlwaysOnTop":  true
 }

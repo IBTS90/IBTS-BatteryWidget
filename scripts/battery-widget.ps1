@@ -18,6 +18,7 @@ $defaultSettings = @{
     "TempUnit" = "C"            # C = Celsius, F = Fahrenheit
     "ShowBattery" = $true       # Mostra la carica batteria (true=laptop, false=desktop)
     "AlwaysOnTop" = $true
+    "RefreshRateSec" = 4        # Intervallo aggiornamento in secondi
 }
 
 # Carica o crea le impostazioni (hashtable uniforme per poter usare ContainsKey)
@@ -39,20 +40,33 @@ if (Test-Path $configFile) {
 }
 
 # Esponi le impostazioni come variabili globali per l'uso nello script
-$TempUnit    = $settings["TempUnit"]
-$ShowBattery = [bool]$settings["ShowBattery"]
-$AlwaysOnTop = [bool]$settings["AlwaysOnTop"]
+$TempUnit       = $settings["TempUnit"]
+$ShowBattery    = [bool]$settings["ShowBattery"]
+$AlwaysOnTop    = [bool]$settings["AlwaysOnTop"]
+$RefreshRateSec = [int]$settings["RefreshRateSec"]
 
 function Save-Settings {
+    # Assicura che la directory esista
+    if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
     @{
-        TempUnit    = $TempUnit
-        ShowBattery = $ShowBattery
-        AlwaysOnTop = $AlwaysOnTop
+        TempUnit       = $TempUnit
+        ShowBattery    = $ShowBattery
+        AlwaysOnTop    = $AlwaysOnTop
+        RefreshRateSec = $RefreshRateSec
     } | ConvertTo-Json | Set-Content -Path $configFile -Encoding UTF8
 }
 
 # Salva subito le impostazioni predefinite se il file non esisteva
 if (-not (Test-Path $configFile)) { Save-Settings }
+
+# Cache per temperature hardware (evita re-query lente su cambio unità)
+$script:lastHwTemps = @{
+    Cpu   = $null
+    Gpu   = $null
+    Ram   = $null
+    Disk  = $null
+    DiskD = $null
+}
 
 # ------------------------------------------------------------------
 # Hardware monitoring (LibreHardwareMonitorLib da ..\dll)
@@ -87,7 +101,7 @@ try {
 }
 
 function Get-HwTemp {
-    param([string]$typePattern)
+    param([string]$typePattern, [string]$cacheKey)
     if (-not $hwMonAvailable) { return $null }
     $result = $null
     foreach ($hw in $computer.Hardware) {
@@ -100,8 +114,72 @@ function Get-HwTemp {
             }
         }
     }
-    if ($null -ne $result) { return [math]::Round($result,0) }
+    if ($null -ne $result) { 
+        $rounded = [math]::Round($result,0)
+        if ($cacheKey) { $script:lastHwTemps[$cacheKey] = $rounded }
+        return $rounded
+    }
     return $null
+}
+
+# Leggero: riformatta le temperature già in cache senza ri-interrogare l'hardware
+# Ri-legge solo i % di utilizzo (veloci via WMI) e combina con temperature in cache
+function Update-TempDisplayOnly {
+    # CPU
+    try {
+        $cpuLoad = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+        $cpuText.Text = "{0}% - {1}" -f [int]$cpuLoad, (Format-Temp $script:lastHwTemps.Cpu)
+        $cpuText.Foreground = Get-TempColor $script:lastHwTemps.Cpu
+    } catch { $cpuText.Text = "N/D"; $cpuText.Foreground = [System.Windows.Media.Brushes]::White }
+
+    # GPU
+    try {
+        $gpuSamples = Get-CimInstance -ClassName Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -ErrorAction Stop
+        $gpuLoad = ($gpuSamples | Where-Object { $_.Name -like "*engtype_3D*" } | Measure-Object -Property UtilizationPercentage -Sum).Sum
+        if (-not $gpuLoad) { $gpuLoad = 0 }
+        if ($gpuLoad -gt 100) { $gpuLoad = 100 }
+        $gpuText.Text = "{0}% - {1}" -f [int]$gpuLoad, (Format-Temp $script:lastHwTemps.Gpu)
+        $gpuText.Foreground = Get-TempColor $script:lastHwTemps.Gpu
+    } catch { $gpuText.Text = "N/D"; $gpuText.Foreground = [System.Windows.Media.Brushes]::White }
+
+    # RAM
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        $totalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+        $usedGB  = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 1)
+        $ramPct  = [int](($usedGB / $totalGB) * 100)
+        $ramInfo = "$ramPct% ($usedGB/$totalGB GB)"
+        if ($script:lastHwTemps.Ram) { $ramInfo += " - $(Format-Temp $script:lastHwTemps.Ram)" }
+        $ramText.Text = $ramInfo
+        $ramText.Foreground = Get-TempColor $script:lastHwTemps.Ram
+    } catch { $ramText.Text = "N/D"; $ramText.Foreground = [System.Windows.Media.Brushes]::White }
+
+    # Disk C:
+    try {
+        $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+        $diskPct = [int]((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100)
+        $diskFreeGB = [math]::Round($disk.FreeSpace / 1GB, 0)
+        $diskInfo = "{0}% ({1} GB free)" -f $diskPct, $diskFreeGB
+        if ($script:lastHwTemps.Disk) { $diskInfo += " - $(Format-Temp $script:lastHwTemps.Disk)" }
+        $diskText.Text = $diskInfo
+        $diskText.Foreground = Get-TempColor $script:lastHwTemps.Disk
+    } catch { $diskText.Text = "N/D"; $diskText.Foreground = [System.Windows.Media.Brushes]::White }
+
+    # Disk D:
+    try {
+        $diskD = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='D:'" -ErrorAction Stop
+        if ($diskD) {
+            $diskDPct = [int]((($diskD.Size - $diskD.FreeSpace) / $diskD.Size) * 100)
+            $diskDFreeGB = [math]::Round($diskD.FreeSpace / 1GB, 0)
+            $diskDInfo = "{0}% ({1} GB free)" -f $diskDPct, $diskDFreeGB
+            if ($script:lastHwTemps.DiskD) { $diskDInfo += " - $(Format-Temp $script:lastHwTemps.DiskD)" }
+            $diskDText.Text = $diskDInfo
+            $diskDText.Foreground = Get-TempColor $script:lastHwTemps.DiskD
+        } else {
+            $diskDText.Text = "Not present"
+            $diskDText.Foreground = [System.Windows.Media.Brushes]::White
+        }
+    } catch { $diskDText.Text = "Not present"; $diskDText.Foreground = [System.Windows.Media.Brushes]::White }
 }
 
 $deg = [string][char]0x00B0
@@ -384,6 +462,9 @@ $diskDRow = $diskDText.Parent
 function Build-MainContent {
     $host_panel = New-Object System.Windows.Controls.StackPanel
     foreach ($r in @($cpuRow, $gpuRow, $ramRow, $diskRow, $diskDRow)) {
+        # Re-add is illegal while the row is still child of a previous panel
+        $prev = $r.Parent
+        if ($prev) { $prev.Children.Remove($r) }
         $host_panel.Children.Add($r) | Out-Null
     }
     $mainContent.Content = $host_panel
@@ -416,6 +497,14 @@ function Open-SettingsWindow {
             <ComboBoxItem Content="Celsius ($($deg)C)" Tag="C"/>
             <ComboBoxItem Content="Fahrenheit ($($deg)F)" Tag="F"/>
         </ComboBox>
+        <TextBlock Text="Refresh rate (seconds)" FontSize="12" Margin="0,10,0,2"/>
+        <ComboBox x:Name="RateBox" SelectedIndex="1">
+            <ComboBoxItem Content="1 second" Tag="1"/>
+            <ComboBoxItem Content="2 seconds" Tag="2"/>
+            <ComboBoxItem Content="4 seconds" Tag="4"/>
+            <ComboBoxItem Content="10 seconds" Tag="10"/>
+            <ComboBoxItem Content="30 seconds" Tag="30"/>
+        </ComboBox>
         <CheckBox x:Name="BatteryChk" Content="Show battery" FontSize="12" Margin="0,10,0,0"/>
         <CheckBox x:Name="TopChk" Content="Always on top" FontSize="12" Margin="0,6,0,0"/>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
@@ -429,6 +518,7 @@ function Open-SettingsWindow {
     $settingsWin = [Windows.Markup.XamlReader]::Load($sreader)
 
     $unitBox   = $settingsWin.FindName("UnitBox")
+    $rateBox   = $settingsWin.FindName("RateBox")
     $batteryChk = $settingsWin.FindName("BatteryChk")
     $topChk    = $settingsWin.FindName("TopChk")
     $saveBtn   = $settingsWin.FindName("SaveBtn")
@@ -438,6 +528,7 @@ function Open-SettingsWindow {
     # agli event handler al momento del click
     $script:sWin        = $settingsWin
     $script:sUnitBox    = $unitBox
+    $script:sRateBox    = $rateBox
     $script:sBatteryChk = $batteryChk
     $script:sTopChk     = $topChk
 
@@ -445,34 +536,52 @@ function Open-SettingsWindow {
     foreach ($item in $unitBox.Items) {
         if ($item.Tag -eq $TempUnit) { $unitBox.SelectedItem = $item; break }
     }
+    foreach ($item in $rateBox.Items) {
+        if ([int]$item.Tag -eq $RefreshRateSec) { $rateBox.SelectedItem = $item; break }
+    }
     $batteryChk.IsChecked = $ShowBattery
     $topChk.IsChecked = $AlwaysOnTop
 
     $cancelBtn.Add_Click({ try { $script:sWin.Close() } catch {} })
 
     $saveBtn.Add_Click({
-        try {
-            $selUnit = $script:sUnitBox.SelectedItem
-            if ($selUnit) { $script:TempUnit = [string]$selUnit.Tag }
-            $script:ShowBattery = ($script:sBatteryChk.IsChecked -eq $true)
-            $script:AlwaysOnTop = ($script:sTopChk.IsChecked -eq $true)
-            Save-Settings
-            $window.Topmost = $script:AlwaysOnTop
-            Build-MainContent
-            if ($script:ShowBattery) {
-                Update-BatteryInfo
-            } else {
-                $percText.Text = ""
-                $statusText.Text = ""
-                Set-OptionalText $wattText ""
-                Set-OptionalText $timeText ""
-            }
-            Update-SystemInfo
-            $script:sWin.Close()
-        } catch {
-            $statusText.Text = "Settings save error"
-            try { $script:sWin.Close() } catch {}
+        $oldTempUnit = $TempUnit
+        $oldRefreshRate = $RefreshRateSec
+        $selUnit = $script:sUnitBox.SelectedItem
+        if ($selUnit) { $script:TempUnit = [string]$selUnit.Tag }
+        $selRate = $script:sRateBox.SelectedItem
+        if ($selRate) { $script:RefreshRateSec = [int]$selRate.Tag }
+        $script:ShowBattery = ($script:sBatteryChk.IsChecked -eq $true)
+        $script:AlwaysOnTop = ($script:sTopChk.IsChecked -eq $true)
+
+        # Salva impostazioni (gestisce errori file silenziosamente)
+        try { Save-Settings } catch { Write-Warning "Settings save failed: $_" }
+
+        $window.Topmost = $script:AlwaysOnTop
+        if ($script:ShowBattery) {
+            Update-BatteryInfo
+        } else {
+            $percText.Text = ""
+            $statusText.Text = ""
+            Set-OptionalText $wattText ""
+            Set-OptionalText $timeText ""
         }
+
+        # Se è cambiato il refresh rate, riavvia il timer subito
+        if ($oldRefreshRate -ne $RefreshRateSec) {
+            $timer.Stop()
+            $timer.Interval = [TimeSpan]::FromSeconds($RefreshRateSec)
+            $timer.Start()
+        }
+
+        # Se è cambiata solo l'unità temperatura, aggiorna solo il display (istantaneo)
+        # Altrimenti fai il refresh completo (include query hardware lente)
+        if ($oldTempUnit -ne $TempUnit -and $oldTempUnit) {
+            Update-TempDisplayOnly
+        } else {
+            Update-SystemInfo
+        }
+        $script:sWin.Close()
     })
 
     [void]$settingsWin.ShowDialog()
@@ -690,7 +799,7 @@ function Update-BatteryInfo {
 function Update-SystemInfo {
     try {
         $cpuLoad = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
-        $cpuTemp = Get-HwTemp "Cpu*"
+        $cpuTemp = Get-HwTemp "Cpu*" "Cpu"
         $cpuText.Text = "{0}% - {1}" -f [int]$cpuLoad, (Format-Temp $cpuTemp)
         $cpuText.Foreground = Get-TempColor $cpuTemp
     } catch { $cpuText.Text = "N/D"; $cpuText.Foreground = [System.Windows.Media.Brushes]::White }
@@ -700,7 +809,7 @@ function Update-SystemInfo {
         $gpuLoad = ($gpuSamples | Where-Object { $_.Name -like "*engtype_3D*" } | Measure-Object -Property UtilizationPercentage -Sum).Sum
         if (-not $gpuLoad) { $gpuLoad = 0 }
         if ($gpuLoad -gt 100) { $gpuLoad = 100 }
-        $gpuTemp = Get-HwTemp "Gpu*"
+        $gpuTemp = Get-HwTemp "Gpu*" "Gpu"
         $gpuText.Text = "{0}% - {1}" -f [int]$gpuLoad, (Format-Temp $gpuTemp)
         $gpuText.Foreground = Get-TempColor $gpuTemp
     } catch { $gpuText.Text = "N/D"; $gpuText.Foreground = [System.Windows.Media.Brushes]::White }
@@ -710,7 +819,7 @@ function Update-SystemInfo {
         $totalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
         $usedGB  = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 1)
         $ramPct  = [int](($usedGB / $totalGB) * 100)
-        $ramTemp = Get-HwTemp "Memory*"
+        $ramTemp = Get-HwTemp "Memory*" "Ram"
         $ramInfo = "$ramPct% ($usedGB/$totalGB GB)"
         if ($ramTemp) { $ramInfo += " - $(Format-Temp $ramTemp)" }
         $ramText.Text = $ramInfo
@@ -721,7 +830,7 @@ function Update-SystemInfo {
         $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
         $diskPct = [int]((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100)
         $diskFreeGB = [math]::Round($disk.FreeSpace / 1GB, 0)
-        $diskTemp = Get-HwTemp "Storage*"
+        $diskTemp = Get-HwTemp "Storage*" "Disk"
         $diskInfo = "{0}% ({1} GB free)" -f $diskPct, $diskFreeGB
         if ($diskTemp) { $diskInfo += " - $(Format-Temp $diskTemp)" }
         $diskText.Text = $diskInfo
@@ -733,7 +842,7 @@ function Update-SystemInfo {
         if ($diskD) {
             $diskDPct = [int]((($diskD.Size - $diskD.FreeSpace) / $diskD.Size) * 100)
             $diskDFreeGB = [math]::Round($diskD.FreeSpace / 1GB, 0)
-            $diskDTemp = Get-HwTemp "Storage*"
+            $diskDTemp = Get-HwTemp "Storage*" "DiskD"
             $diskDInfo = "{0}% ({1} GB free)" -f $diskDPct, $diskDFreeGB
             if ($diskDTemp) { $diskDInfo += " - $(Format-Temp $diskDTemp)" }
             $diskDText.Text = $diskDInfo
@@ -749,7 +858,7 @@ function Update-SystemInfo {
 # Timer di aggiornamento + avvio
 # ------------------------------------------------------------------
 $timer = New-Object System.Windows.Threading.DispatcherTimer
-$timer.Interval = [TimeSpan]::FromSeconds(4)
+$timer.Interval = [TimeSpan]::FromSeconds($RefreshRateSec)
 $timer.Add_Tick({
     Update-BatteryInfo
     Update-SystemInfo
